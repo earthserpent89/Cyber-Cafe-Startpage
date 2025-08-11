@@ -74,6 +74,14 @@
         left: 50%;
         transform: translate(-50%, -50%);
       }
+      #background-container {
+        transition: background-image 0.5s ease-in-out;
+      }
+      #thumbnail-bg {
+        filter: blur(20px) brightness(0.8);
+        transform: scale(1.1);
+        transition: opacity 0.5s ease-in-out;
+      }
     </style>
   </head>
   <body>
@@ -131,7 +139,7 @@
           
           const handleSave = () => {
               const finalConfig = { ...localConfig };
-              const oldConfig = { ...config }; // Capture old config for comparison
+              const oldConfig = { ...config };
               
               if (localConfig.bgUrl.trim()) {
                   finalConfig.bgMode = 'url';
@@ -143,7 +151,6 @@
               onClose();
               showNotification("Settings saved.", false);
 
-              // If the mode is wallhaven and settings have changed, fetch a new wallpaper
               if (finalConfig.bgMode === 'wallhaven' && JSON.stringify(oldConfig) !== JSON.stringify(finalConfig)) {
                   fetchWallhavenWallpaper(finalConfig);
               }
@@ -279,6 +286,7 @@
 
       function App() {
           const [config, setConfig] = useState(null);
+          const [currentWallhaven, setCurrentWallhaven] = useState({ path: '', id: null, thumb: '' });
           const [isSettingsOpen, setIsSettingsOpen] = useState(false);
           const [notification, setNotification] = useState({ show: false, message: '', isError: false });
           const [isRefreshing, setIsRefreshing] = useState(false);
@@ -317,7 +325,7 @@
                       const data = await response.json();
                       if (data.data && data.data.length > 0) {
                           const randomImage = data.data[Math.floor(Math.random() * data.data.length)];
-                          setConfig(prev => ({ ...prev, wallhavenPath: randomImage.path, wallhavenId: randomImage.id }));
+                          setConfig(prev => ({ ...prev, wallhavenPath: randomImage.path, wallhavenId: randomImage.id, wallhavenThumb: randomImage.thumbs.small }));
                           success = true;
                           break; 
                       } else {
@@ -342,6 +350,7 @@
                   bgUrl: 'background.gif',
                   wallhavenPath: '',
                   wallhavenId: null,
+                  wallhavenThumb: '',
                   wallhavenTags: '',
                   wallhavenSorting: 'toplist',
                   wallhavenCategories: [true, true, true],
@@ -357,8 +366,7 @@
               };
               if (savedConfig) {
                   const parsedConfig = JSON.parse(savedConfig);
-                  const mergedConfig = {...initialConfig, ...parsedConfig};
-                  setConfig(mergedConfig);
+                  setConfig({...initialConfig, ...parsedConfig});
               } else {
                   setConfig(initialConfig);
               }
@@ -387,15 +395,31 @@
           }, [config, isRefreshing, fetchWallhavenWallpaper]);
           
           useEffect(() => {
-              const bgElement = document.getElementById('background-container');
-              if (!bgElement) return;
+              const thumbBg = document.getElementById('thumbnail-bg');
+              const mainBg = document.getElementById('background-container');
+              if (!thumbBg || !mainBg) return;
+
               const displayUrl = config?.bgMode === 'url' ? config.bgUrl : config?.wallhavenPath;
-              if (displayUrl) {
-                  bgElement.style.backgroundImage = `url('${displayUrl}')`;
+              const thumbUrl = config?.bgMode === 'wallhaven' ? config.wallhavenThumb : null;
+
+              if (thumbUrl) {
+                  thumbBg.style.backgroundImage = `url('${thumbUrl}')`;
+                  thumbBg.style.opacity = 1;
+
+                  const img = new Image();
+                  img.src = displayUrl;
+                  img.onload = () => {
+                      mainBg.style.backgroundImage = `url('${displayUrl}')`;
+                      thumbBg.style.opacity = 0;
+                  };
+              } else if (displayUrl) {
+                  mainBg.style.backgroundImage = `url('${displayUrl}')`;
+                  thumbBg.style.opacity = 0;
               } else {
-                  bgElement.style.backgroundImage = 'none';
+                  mainBg.style.backgroundImage = 'none';
+                  thumbBg.style.backgroundImage = 'none';
               }
-          }, [config?.bgMode, config?.bgUrl, config?.wallhavenPath]);
+          }, [config?.bgMode, config?.bgUrl, config?.wallhavenPath, config?.wallhavenThumb]);
 
           if (!config) {
             return <div className="bg-gray-900 min-h-screen"></div>;
@@ -403,6 +427,7 @@
 
           return (
               <React.Fragment>
+                  <div id="thumbnail-bg" className="absolute inset-0 bg-cover bg-center transition-opacity duration-500"></div>
                   <div id="background-container" className="absolute inset-0 bg-cover bg-center transition-all duration-500 z-0"></div>
                   <div id="notification" className={`fixed top-5 left-1/2 -translate-x-1/2 py-2 px-5 rounded-lg shadow-lg opacity-0 -translate-y-10 z-50 transition-all ${notification.show ? 'opacity-100 translate-y-0' : ''} ${notification.isError ? 'bg-red-500' : 'bg-green-500'}`}>
                       <p>{notification.message}</p>
