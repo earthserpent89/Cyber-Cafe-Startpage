@@ -131,7 +131,7 @@
           
           const handleSave = () => {
               const finalConfig = { ...localConfig };
-              const oldBgMode = config.bgMode;
+              const oldConfig = { ...config }; // Capture old config for comparison
               
               if (localConfig.bgUrl.trim()) {
                   finalConfig.bgMode = 'url';
@@ -144,7 +144,7 @@
               showNotification("Settings saved.", false);
 
               // If the mode is wallhaven and settings have changed, fetch a new wallpaper
-              if (finalConfig.bgMode === 'wallhaven' && JSON.stringify(config) !== JSON.stringify(finalConfig)) {
+              if (finalConfig.bgMode === 'wallhaven' && JSON.stringify(oldConfig) !== JSON.stringify(finalConfig)) {
                   fetchWallhavenWallpaper(finalConfig);
               }
           };
@@ -357,7 +357,8 @@
               };
               if (savedConfig) {
                   const parsedConfig = JSON.parse(savedConfig);
-                  setConfig({...initialConfig, ...parsedConfig});
+                  const mergedConfig = {...initialConfig, ...parsedConfig};
+                  setConfig(mergedConfig);
               } else {
                   setConfig(initialConfig);
               }
