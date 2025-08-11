@@ -379,6 +379,7 @@
           
           useEffect(() => {
               const bgElement = document.getElementById('background-container');
+              if (!bgElement) return;
               const displayUrl = config?.bgMode === 'url' ? config.bgUrl : currentWallhaven.path;
               if (displayUrl) {
                   bgElement.style.backgroundImage = `url('${displayUrl}')`;
