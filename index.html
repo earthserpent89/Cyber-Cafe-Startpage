@@ -17,6 +17,7 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
     <style>
+    html, body { height: 100%; overflow: hidden; }
       body {
         font-family: 'Inter', sans-serif;
         background-color: #111827; /* bg-gray-900 */
@@ -81,11 +82,6 @@
       }
       #background-container {
         transition: background-image 0.5s ease-in-out;
-      }
-      #thumbnail-bg {
-        filter: blur(20px) brightness(0.8);
-        transform: scale(1.1);
-        transition: opacity 0.5s ease-in-out;
       }
     </style>
   </head>
@@ -318,6 +314,7 @@
           const [notification, setNotification] = useState({ show: false, message: '', isError: false });
           const [isRefreshing, setIsRefreshing] = useState(false);
           const notifTimeoutRef = useRef(null);
+          const [nextWallpaper, setNextWallpaper] = useState(null); // { id, path, loaded }
 
           const getAtLeastResolution = () => `${window.screen.width}x${window.screen.height}`;
 
@@ -328,7 +325,14 @@
               return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(id));
           };
 
-          const fetchWallhavenWallpaper = useCallback(async (fetchConfig) => {
+          const preloadImage = (url) => new Promise((resolve, reject) => {
+              const img = new Image();
+              img.onload = () => resolve(url);
+              img.onerror = reject;
+              img.src = url;
+          });
+
+          const fetchWallhavenWallpaper = useCallback(async (fetchConfig, prefetchOnly = false) => {
               setIsRefreshing(true);
               const proxies = ['https://corsproxy.io/?', 'https://api.allorigins.win/raw?url='];
               const { wallhavenTags, wallhavenSorting, wallhavenCategories, wallhavenPurity, wallhavenApiKey, wallhavenMatchResolution } = fetchConfig;
@@ -338,7 +342,6 @@
                   const tags = (wallhavenTags || '').trim();
                   const cats = (wallhavenCategories || [true, true, true]).map(c => c ? '1' : '0').join('');
                   const purityFlags = [...(wallhavenPurity || [true, false, false])];
-                  if (!wallhavenApiKey) purityFlags[2] = false; // Enforce NSFW off without API key
                   const purity = purityFlags.map(p => p ? '1' : '0').join('');
 
                   if (!relax && tags) params.append('q', tags);
@@ -380,8 +383,22 @@
                       data = await tryFetch(buildParams(true));
                   }
                   if (data?.data?.length) {
-                      const randomImage = data.data[Math.floor(Math.random() * data.data.length)];
-                      setConfig(prev => ({ ...prev, wallhavenPath: randomImage.path, wallhavenId: randomImage.id, wallhavenThumb: randomImage.thumbs.small }));
+                      const idx = Math.floor(Math.random() * data.data.length);
+                      const pick = data.data[idx];
+                      if (prefetchOnly) {
+                          // Only stage next wallpaper
+                          preloadImage(pick.path).then(() => setNextWallpaper({ id: pick.id, path: pick.path, loaded: true })).catch(() => setNextWallpaper(null));
+                      } else {
+                          // Apply now and stage another if possible
+                          setConfig(prev => ({ ...prev, wallhavenPath: pick.path, wallhavenId: pick.id }));
+                          const nextIdx = (idx + 1) % data.data.length;
+                          if (data.data.length > 1) {
+                              const candidate = data.data[nextIdx];
+                              preloadImage(candidate.path).then(() => setNextWallpaper({ id: candidate.id, path: candidate.path, loaded: true })).catch(() => setNextWallpaper(null));
+                          } else {
+                              setNextWallpaper(null);
+                          }
+                      }
                   } else {
                       showNotification('No images found for the selected criteria.', true);
                   }
@@ -436,52 +453,39 @@
 
           const handleRefresh = useCallback(() => {
               if (isRefreshing) return;
-              if (config.bgMode === 'wallhaven') {
-                  fetchWallhavenWallpaper(config);
+          if (config.bgMode === 'wallhaven') {
+                  if (nextWallpaper?.loaded) {
+                      // Swap instantly to prefetched wallpaper
+                      setConfig(prev => ({ ...prev, wallhavenPath: nextWallpaper.path, wallhavenId: nextWallpaper.id }));
+                      setNextWallpaper(null);
+                      // Kick off fetching another next in background
+              fetchWallhavenWallpaper(config, true);
+                  } else {
+              fetchWallhavenWallpaper(config, false);
+                  }
               } else if (config.bgMode === 'url' && config.bgUrl) {
                   const currentUrl = config.bgUrl;
                   setConfig(c => ({...c, bgUrl: ''}));
                   setTimeout(() => setConfig(c => ({...c, bgUrl: currentUrl})), 10);
               }
-          }, [config, isRefreshing, fetchWallhavenWallpaper]);
+          }, [config, isRefreshing, fetchWallhavenWallpaper, nextWallpaper]);
           
           useEffect(() => {
-              const thumbBg = document.getElementById('thumbnail-bg');
               const mainBg = document.getElementById('background-container');
-              if (!thumbBg || !mainBg) return;
+              if (!mainBg) return;
 
               const displayUrl = config?.bgMode === 'url' ? config.bgUrl : config?.wallhavenPath;
-              const thumbUrl = config?.bgMode === 'wallhaven' ? config.wallhavenThumb : null;
-
-              if (thumbUrl && displayUrl) {
-                  thumbBg.style.backgroundImage = `url('${thumbUrl}')`;
-                  thumbBg.style.opacity = 1;
-
-                  const img = new Image();
-                  img.src = displayUrl;
-                  img.onload = () => {
-                      mainBg.style.backgroundImage = `url('${displayUrl}')`;
-                      thumbBg.style.opacity = 0;
-                  };
-                  img.onerror = () => {
-                      mainBg.style.backgroundImage = `url('background.gif')`;
-                      thumbBg.style.opacity = 0;
-                      showNotification('Failed to load wallpaper. Reverted to default.', true);
-                  };
-              } else if (displayUrl) {
-                  const img = new Image();
-                  img.src = displayUrl;
-                  img.onload = () => { mainBg.style.backgroundImage = `url('${displayUrl}')`; thumbBg.style.opacity = 0; };
-                  img.onerror = () => {
-                      mainBg.style.backgroundImage = `url('background.gif')`;
-                      thumbBg.style.opacity = 0;
-                      showNotification('Failed to load wallpaper. Reverted to default.', true);
-                  };
+              if (displayUrl) {
+                  preloadImage(displayUrl)
+                    .then(() => { mainBg.style.backgroundImage = `url('${displayUrl}')`; })
+                    .catch(() => {
+                        mainBg.style.backgroundImage = `url('background.gif')`;
+                        showNotification('Failed to load wallpaper. Reverted to default.', true);
+                    });
               } else {
                   mainBg.style.backgroundImage = 'none';
-                  thumbBg.style.backgroundImage = 'none';
               }
-          }, [config?.bgMode, config?.bgUrl, config?.wallhavenPath, config?.wallhavenThumb]);
+          }, [config?.bgMode, config?.bgUrl, config?.wallhavenPath]);
 
           if (!config) {
             return <div className="bg-gray-900 min-h-screen"></div>;
@@ -489,7 +493,6 @@
 
           return (
               <React.Fragment>
-                  <div id="thumbnail-bg" className="absolute inset-0 bg-cover bg-center transition-opacity duration-500"></div>
                   <div id="background-container" className="absolute inset-0 bg-cover bg-center transition-all duration-500 z-0"></div>
                   <div id="notification" role="status" aria-live="polite" aria-atomic="true" className={`fixed top-5 left-1/2 -translate-x-1/2 py-2 px-5 rounded-lg shadow-lg opacity-0 -translate-y-10 z-50 transition-all ${notification.show ? 'opacity-100 translate-y-0' : ''} ${notification.isError ? 'bg-red-500' : 'bg-green-500'}`}>
                       <p>{notification.message}</p>
