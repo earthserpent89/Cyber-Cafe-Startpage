@@ -585,10 +585,14 @@
                     })
                     .catch(() => {
                         mainBg.style.backgroundImage = `url('background.gif')`;
+                        lastImageUrlRef.current = null;
+                        setOverlayPos(null); // center overlay on fallback
                         showNotification('Failed to load wallpaper. Reverted to default.', true);
                     });
               } else {
-                  mainBg.style.backgroundImage = 'none';
+                  mainBg.style.backgroundImage = `url('background.gif')`;
+                  lastImageUrlRef.current = null;
+                  setOverlayPos(null); // center overlay when no custom wallpaper
               }
           }, [config?.bgMode, config?.bgUrl, config?.wallhavenPath]);
 
