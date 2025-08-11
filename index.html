@@ -334,8 +334,7 @@
 
           const preloadImage = (url) => new Promise((resolve, reject) => {
               const img = new Image();
-              // Attempt anonymous CORS for canvas analysis where supported by server
-              try { img.crossOrigin = 'anonymous'; } catch {}
+              // Do not set crossOrigin here; we only need the browser cache and CSS bg to succeed
               img.onload = () => resolve(url);
               img.onerror = reject;
               img.src = url;
@@ -584,10 +583,10 @@
                         analyzeAndPosition(displayUrl);
                     })
                     .catch(() => {
-                        mainBg.style.backgroundImage = `url('background.gif')`;
-                        lastImageUrlRef.current = null;
-                        setOverlayPos(null); // center overlay on fallback
-                        showNotification('Failed to load wallpaper. Reverted to default.', true);
+                        // Prefetch failed (likely CORS), but CSS background can still load; apply without analysis
+                        mainBg.style.backgroundImage = `url('${displayUrl}')`;
+                        lastImageUrlRef.current = displayUrl;
+                        setOverlayPos(null);
                     });
               } else {
                   mainBg.style.backgroundImage = `url('background.gif')`;
