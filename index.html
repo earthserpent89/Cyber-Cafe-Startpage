@@ -124,17 +124,31 @@
           </div>
       );
 
-      const SettingsPanel = ({ config, setConfig, isOpen, onClose, showNotification }) => {
+      const SettingsPanel = ({ config, setConfig, isOpen, onClose, showNotification, fetchWallhavenWallpaper }) => {
           const [activeTab, setActiveTab] = useState('display');
           const [localConfig, setLocalConfig] = useState(config);
           useEffect(() => { if (isOpen) { setLocalConfig(config); } }, [config, isOpen]);
+          
           const handleSave = () => {
               const finalConfig = { ...localConfig };
-              if (localConfig.bgUrl.trim()) { finalConfig.bgMode = 'url'; } else { finalConfig.bgMode = 'wallhaven'; }
+              const oldBgMode = config.bgMode;
+              
+              if (localConfig.bgUrl.trim()) {
+                  finalConfig.bgMode = 'url';
+              } else {
+                  finalConfig.bgMode = 'wallhaven';
+              }
+              
               setConfig(finalConfig);
               onClose();
               showNotification("Settings saved.", false);
+
+              // If the mode is wallhaven and settings have changed, fetch a new wallpaper
+              if (finalConfig.bgMode === 'wallhaven' && JSON.stringify(config) !== JSON.stringify(finalConfig)) {
+                  fetchWallhavenWallpaper(finalConfig);
+              }
           };
+
           const handleConfigChange = (field, value) => setLocalConfig(prev => ({ ...prev, [field]: value }));
           const handleDateModeChange = (e) => {
               const newDateMode = e.target.value;
@@ -265,7 +279,6 @@
 
       function App() {
           const [config, setConfig] = useState(null);
-          const [currentWallhaven, setCurrentWallhaven] = useState({ path: '', id: null });
           const [isSettingsOpen, setIsSettingsOpen] = useState(false);
           const [notification, setNotification] = useState({ show: false, message: '', isError: false });
           const [isRefreshing, setIsRefreshing] = useState(false);
@@ -283,10 +296,7 @@
 
           const fetchWallhavenWallpaper = useCallback(async (fetchConfig) => {
               setIsRefreshing(true);
-              const proxies = [
-                  'https://corsproxy.io/?',
-                  'https://api.allorigins.win/raw?url='
-              ];
+              const proxies = ['https://corsproxy.io/?', 'https://api.allorigins.win/raw?url='];
               const { wallhavenTags, wallhavenSorting, wallhavenCategories, wallhavenPurity, wallhavenApiKey, wallhavenMatchResolution } = fetchConfig;
               const tags = wallhavenTags.trim();
               const categoryString = wallhavenCategories.map(c => c ? '1' : '0').join('');
@@ -307,7 +317,7 @@
                       const data = await response.json();
                       if (data.data && data.data.length > 0) {
                           const randomImage = data.data[Math.floor(Math.random() * data.data.length)];
-                          setCurrentWallhaven({ path: randomImage.path, id: randomImage.id });
+                          setConfig(prev => ({ ...prev, wallhavenPath: randomImage.path, wallhavenId: randomImage.id }));
                           success = true;
                           break; 
                       } else {
@@ -330,6 +340,8 @@
               const initialConfig = {
                   bgMode: 'url',
                   bgUrl: 'background.gif',
+                  wallhavenPath: '',
+                  wallhavenId: null,
                   wallhavenTags: '',
                   wallhavenSorting: 'toplist',
                   wallhavenCategories: [true, true, true],
@@ -345,15 +357,11 @@
               };
               if (savedConfig) {
                   const parsedConfig = JSON.parse(savedConfig);
-                  const mergedConfig = {...initialConfig, ...parsedConfig};
-                  setConfig(mergedConfig);
-                  if (mergedConfig.bgMode === 'wallhaven') {
-                      fetchWallhavenWallpaper(mergedConfig);
-                  }
+                  setConfig({...initialConfig, ...parsedConfig});
               } else {
                   setConfig(initialConfig);
               }
-          }, [fetchWallhavenWallpaper]);
+          }, []);
 
           useEffect(() => {
               if(config) {
@@ -380,16 +388,16 @@
           useEffect(() => {
               const bgElement = document.getElementById('background-container');
               if (!bgElement) return;
-              const displayUrl = config?.bgMode === 'url' ? config.bgUrl : currentWallhaven.path;
+              const displayUrl = config?.bgMode === 'url' ? config.bgUrl : config?.wallhavenPath;
               if (displayUrl) {
                   bgElement.style.backgroundImage = `url('${displayUrl}')`;
               } else {
                   bgElement.style.backgroundImage = 'none';
               }
-          }, [config?.bgMode, config?.bgUrl, currentWallhaven.path]);
+          }, [config?.bgMode, config?.bgUrl, config?.wallhavenPath]);
 
           if (!config) {
-            return <div className="bg-gray-900 min-h-screen"></div>; // Loading state
+            return <div className="bg-gray-900 min-h-screen"></div>;
           }
 
           return (
@@ -402,8 +410,8 @@
                       <Clock dateMode={config.dateMode} />
                       <ShortcutsGrid shortcuts={config.shortcuts} />
                   </main>
-                  {config.bgMode === 'wallhaven' && currentWallhaven.id && (
-                       <a href={`https://wallhaven.cc/w/${currentWallhaven.id}`} target="_blank" className="fixed bottom-5 left-1/2 -translate-x-1/2 p-2 px-4 rounded-full text-white text-sm transition-opacity hover:opacity-100 opacity-70 z-20 acrylic-box">
+                  {config.bgMode === 'wallhaven' && config.wallhavenId && (
+                       <a href={`https://wallhaven.cc/w/${config.wallhavenId}`} target="_blank" className="fixed bottom-5 left-1/2 -translate-x-1/2 p-2 px-4 rounded-full text-white text-sm transition-opacity hover:opacity-100 opacity-70 z-20 acrylic-box">
                           Wallpaper Info
                        </a>
                   )}
@@ -413,7 +421,7 @@
                   <button onClick={() => setIsSettingsOpen(true)} className="fixed bottom-5 right-5 p-3 rounded-full text-white transition-colors focus:outline-none focus:ring-2 focus:ring-white z-20 acrylic-box">
                       <Icon path="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065zM15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                   </button>
-                  <SettingsPanel config={config} setConfig={setConfig} isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} showNotification={showNotification} />
+                  <SettingsPanel config={config} setConfig={setConfig} isOpen={isSettingsOpen} onClose={() => setIsSettingsOpen(false)} showNotification={showNotification} fetchWallhavenWallpaper={fetchWallhavenWallpaper}/>
               </React.Fragment>
           );
       }
