@@ -576,18 +576,10 @@
 
               const displayUrl = config?.bgMode === 'url' ? config.bgUrl : config?.wallhavenPath;
               if (displayUrl) {
-                  preloadImage(displayUrl)
-                    .then(() => { 
-                        mainBg.style.backgroundImage = `url('${displayUrl}')`; 
-                        lastImageUrlRef.current = displayUrl;
-                        analyzeAndPosition(displayUrl);
-                    })
-                    .catch(() => {
-                        // Prefetch failed (likely CORS), but CSS background can still load; apply without analysis
-                        mainBg.style.backgroundImage = `url('${displayUrl}')`;
-                        lastImageUrlRef.current = displayUrl;
-                        setOverlayPos(null);
-                    });
+                  // Apply wallpaper immediately; analysis is best-effort and may fail due to CORS
+                  mainBg.style.backgroundImage = `url('${displayUrl}')`;
+                  lastImageUrlRef.current = displayUrl;
+                  Promise.resolve(analyzeAndPosition(displayUrl)).catch(() => setOverlayPos(null));
               } else {
                   mainBg.style.backgroundImage = `url('background.gif')`;
                   lastImageUrlRef.current = null;
