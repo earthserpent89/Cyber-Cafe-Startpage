@@ -4,6 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cyber Cafe Startpage</title>
+    <meta name="theme-color" content="#111827" />
+    <link rel="manifest" href="manifest.json" />
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Google Fonts -->
@@ -21,6 +23,9 @@
         color: white;
         min-height: 100vh;
       }
+            @media (prefers-reduced-motion: reduce) {
+                * { transition: none !important; animation: none !important; }
+            }
       .acrylic-box {
         background-color: rgba(0, 0, 0, 0.25);
         backdrop-filter: blur(10px);
@@ -87,8 +92,8 @@
   <body>
     <div id="root"></div>
 
-    <script type="text/babel">
-      const { useState, useEffect, useCallback, useMemo } = React;
+        <script type="text/babel">
+            const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
       // --- Helper Components ---
       const Icon = ({ path, className = "h-6 w-6" }) => (
@@ -136,13 +141,36 @@
           const [activeTab, setActiveTab] = useState('display');
           const [localConfig, setLocalConfig] = useState(config);
           useEffect(() => { if (isOpen) { setLocalConfig(config); } }, [config, isOpen]);
+          // Close on Escape
+          useEffect(() => {
+              if (!isOpen) return;
+              const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+              window.addEventListener('keydown', onKey);
+              return () => window.removeEventListener('keydown', onKey);
+          }, [isOpen, onClose]);
           
           const handleSave = () => {
               const finalConfig = { ...localConfig };
               const oldConfig = { ...config };
               
-              if (localConfig.bgUrl.trim()) {
-                  finalConfig.bgMode = 'url';
+              // Sanitize bgUrl and decide mode
+              const rawUrl = (localConfig.bgUrl || '').trim();
+              if (rawUrl) {
+                  try {
+                      const u = new URL(rawUrl, window.location.href);
+                      if (u.protocol === 'http:' || u.protocol === 'https:') {
+                          finalConfig.bgUrl = u.href;
+                          finalConfig.bgMode = 'url';
+                      } else {
+                          showNotification('Unsupported image URL protocol. Using Wallhaven.', true);
+                          finalConfig.bgUrl = '';
+                          finalConfig.bgMode = 'wallhaven';
+                      }
+                  } catch {
+                      showNotification('Invalid image URL. Using Wallhaven.', true);
+                      finalConfig.bgUrl = '';
+                      finalConfig.bgMode = 'wallhaven';
+                  }
               } else {
                   finalConfig.bgMode = 'wallhaven';
               }
@@ -175,7 +203,7 @@
           const isWallhavenDisabled = localConfig.bgUrl.trim() !== '';
           const isNsfwDisabled = isWallhavenDisabled || !localConfig.wallhavenApiKey;
           return (
-              <div className={`fixed top-0 right-0 h-full w-full max-w-md bg-gray-800/70 backdrop-blur-md shadow-2xl flex flex-col transform transition-transform z-30 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+              <div role="dialog" aria-modal="true" aria-label="Settings" className={`fixed top-0 right-0 h-full w-full max-w-md bg-gray-800/70 backdrop-blur-md shadow-2xl flex flex-col transform transition-transform z-30 ${isOpen ? 'translate-x-0' : 'translate-x-full'}`}>
                   <div className="flex justify-between items-center p-6 border-b border-gray-700 flex-shrink-0">
                       <h2 className="text-2xl font-bold">Settings</h2>
                       <button onClick={onClose} className="p-2 rounded-full hover:bg-white/10 transition-colors"><Icon path="M6 18L18 6M6 6l12 12" /></button>
@@ -286,61 +314,83 @@
 
       function App() {
           const [config, setConfig] = useState(null);
-          const [currentWallhaven, setCurrentWallhaven] = useState({ path: '', id: null, thumb: '' });
           const [isSettingsOpen, setIsSettingsOpen] = useState(false);
           const [notification, setNotification] = useState({ show: false, message: '', isError: false });
           const [isRefreshing, setIsRefreshing] = useState(false);
+          const notifTimeoutRef = useRef(null);
 
-          const getAspectRatioString = () => {
-              const ratio = window.innerWidth / window.innerHeight;
-              if (ratio > 2) return '21x9';
-              if (ratio > 1.7) return '16x9';
-              if (ratio > 1.5) return '16x10';
-              if (ratio > 1.2) return '4x3';
-              if (ratio < 0.7) return '9x16';
-              if (ratio < 0.8) return '10x16';
-              return '16x9';
+          const getAtLeastResolution = () => `${window.screen.width}x${window.screen.height}`;
+
+          // Small helper: fetch with timeout
+          const fetchWithTimeout = (url, { timeout = 8000 } = {}) => {
+              const ctrl = new AbortController();
+              const id = setTimeout(() => ctrl.abort('timeout'), timeout);
+              return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(id));
           };
 
           const fetchWallhavenWallpaper = useCallback(async (fetchConfig) => {
               setIsRefreshing(true);
               const proxies = ['https://corsproxy.io/?', 'https://api.allorigins.win/raw?url='];
               const { wallhavenTags, wallhavenSorting, wallhavenCategories, wallhavenPurity, wallhavenApiKey, wallhavenMatchResolution } = fetchConfig;
-              const tags = wallhavenTags.trim();
-              const categoryString = wallhavenCategories.map(c => c ? '1' : '0').join('');
-              const purityString = wallhavenPurity.map(p => p ? '1' : '0').join('');
-              const params = new URLSearchParams();
-              if (tags) params.append('q', tags);
-              params.append('sorting', wallhavenSorting);
-              params.append('categories', categoryString);
-              params.append('purity', purityString);
-              if (wallhavenMatchResolution) { params.append('ratios', getAspectRatioString()); }
-              if (wallhavenApiKey) params.append('apikey', wallhavenApiKey);
-              const apiUrl = `https://wallhaven.cc/api/v1/search?${params.toString()}`;
-              let success = false;
-              for (const proxyUrl of proxies) {
-                  try {
-                      const response = await fetch(proxyUrl + encodeURIComponent(apiUrl));
-                      if (!response.ok) throw new Error(`Proxy error (${response.status})`);
-                      const data = await response.json();
-                      if (data.data && data.data.length > 0) {
-                          const randomImage = data.data[Math.floor(Math.random() * data.data.length)];
-                          setConfig(prev => ({ ...prev, wallhavenPath: randomImage.path, wallhavenId: randomImage.id, wallhavenThumb: randomImage.thumbs.small }));
-                          success = true;
-                          break; 
-                      } else {
-                          showNotification('No images found for the selected criteria.', true);
-                          success = true; 
-                          break;
-                      }
-                  } catch (error) {
-                      console.warn(`Fetch failed with proxy: ${proxyUrl}`, error);
+
+              const buildParams = (relax = false) => {
+                  const params = new URLSearchParams();
+                  const tags = (wallhavenTags || '').trim();
+                  const cats = (wallhavenCategories || [true, true, true]).map(c => c ? '1' : '0').join('');
+                  const purityFlags = [...(wallhavenPurity || [true, false, false])];
+                  if (!wallhavenApiKey) purityFlags[2] = false; // Enforce NSFW off without API key
+                  const purity = purityFlags.map(p => p ? '1' : '0').join('');
+
+                  if (!relax && tags) params.append('q', tags);
+                  params.append('sorting', wallhavenSorting || 'toplist');
+                  params.append('categories', cats);
+                  params.append('purity', purity);
+                  if (!relax && wallhavenMatchResolution) {
+                      params.append('atleast', getAtLeastResolution());
                   }
+                  if ((wallhavenSorting || 'toplist') === 'random') {
+                      const seed = new Date().toISOString().slice(0, 10); // daily seed
+                      params.append('seed', seed);
+                  }
+                  if (wallhavenApiKey) params.append('apikey', wallhavenApiKey);
+                  return params;
+              };
+
+              const tryFetch = async (params) => {
+                  const apiUrl = `https://wallhaven.cc/api/v1/search?${params.toString()}`;
+                  const attempts = proxies.map(p => (
+                      fetchWithTimeout(p + encodeURIComponent(apiUrl), { timeout: 9000 })
+                        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+                  ));
+                  let data;
+                  if (Promise.any) {
+                      data = await Promise.any(attempts);
+                  } else {
+                      data = await new Promise((resolve, reject) => {
+                          let rejections = 0;
+                          attempts.forEach(p => p.then(resolve).catch(() => { rejections++; if (rejections === attempts.length) reject(new Error('All proxies failed')); }));
+                      });
+                  }
+                  return data;
+              };
+
+              try {
+                  let data = await tryFetch(buildParams(false));
+                  if (!data?.data?.length) {
+                      data = await tryFetch(buildParams(true));
+                  }
+                  if (data?.data?.length) {
+                      const randomImage = data.data[Math.floor(Math.random() * data.data.length)];
+                      setConfig(prev => ({ ...prev, wallhavenPath: randomImage.path, wallhavenId: randomImage.id, wallhavenThumb: randomImage.thumbs.small }));
+                  } else {
+                      showNotification('No images found for the selected criteria.', true);
+                  }
+              } catch (err) {
+                  console.warn('Wallhaven fetch failed:', err);
+                  showNotification('Fetch failed after trying all proxies.', true);
+              } finally {
+                  setIsRefreshing(false);
               }
-              if (!success) {
-                  showNotification(`Fetch failed after trying all proxies.`, true);
-              }
-              setIsRefreshing(false);
           }, []);
 
           useEffect(() => {
@@ -380,7 +430,8 @@
 
           const showNotification = useCallback((message, isError = false) => {
               setNotification({ show: true, message, isError });
-              setTimeout(() => setNotification({ show: false, message: '', isError: false }), 4000);
+              if (notifTimeoutRef.current) clearTimeout(notifTimeoutRef.current);
+              notifTimeoutRef.current = setTimeout(() => setNotification({ show: false, message: '', isError: false }), 4000);
           }, []);
 
           const handleRefresh = useCallback(() => {
@@ -402,7 +453,7 @@
               const displayUrl = config?.bgMode === 'url' ? config.bgUrl : config?.wallhavenPath;
               const thumbUrl = config?.bgMode === 'wallhaven' ? config.wallhavenThumb : null;
 
-              if (thumbUrl) {
+              if (thumbUrl && displayUrl) {
                   thumbBg.style.backgroundImage = `url('${thumbUrl}')`;
                   thumbBg.style.opacity = 1;
 
@@ -412,9 +463,20 @@
                       mainBg.style.backgroundImage = `url('${displayUrl}')`;
                       thumbBg.style.opacity = 0;
                   };
+                  img.onerror = () => {
+                      mainBg.style.backgroundImage = `url('background.gif')`;
+                      thumbBg.style.opacity = 0;
+                      showNotification('Failed to load wallpaper. Reverted to default.', true);
+                  };
               } else if (displayUrl) {
-                  mainBg.style.backgroundImage = `url('${displayUrl}')`;
-                  thumbBg.style.opacity = 0;
+                  const img = new Image();
+                  img.src = displayUrl;
+                  img.onload = () => { mainBg.style.backgroundImage = `url('${displayUrl}')`; thumbBg.style.opacity = 0; };
+                  img.onerror = () => {
+                      mainBg.style.backgroundImage = `url('background.gif')`;
+                      thumbBg.style.opacity = 0;
+                      showNotification('Failed to load wallpaper. Reverted to default.', true);
+                  };
               } else {
                   mainBg.style.backgroundImage = 'none';
                   thumbBg.style.backgroundImage = 'none';
@@ -429,7 +491,7 @@
               <React.Fragment>
                   <div id="thumbnail-bg" className="absolute inset-0 bg-cover bg-center transition-opacity duration-500"></div>
                   <div id="background-container" className="absolute inset-0 bg-cover bg-center transition-all duration-500 z-0"></div>
-                  <div id="notification" className={`fixed top-5 left-1/2 -translate-x-1/2 py-2 px-5 rounded-lg shadow-lg opacity-0 -translate-y-10 z-50 transition-all ${notification.show ? 'opacity-100 translate-y-0' : ''} ${notification.isError ? 'bg-red-500' : 'bg-green-500'}`}>
+                  <div id="notification" role="status" aria-live="polite" aria-atomic="true" className={`fixed top-5 left-1/2 -translate-x-1/2 py-2 px-5 rounded-lg shadow-lg opacity-0 -translate-y-10 z-50 transition-all ${notification.show ? 'opacity-100 translate-y-0' : ''} ${notification.isError ? 'bg-red-500' : 'bg-green-500'}`}>
                       <p>{notification.message}</p>
                   </div>
                   <main id="main-content" className="relative z-10 flex flex-col items-center justify-center min-h-screen p-4 sm:p-6 md:p-8">
@@ -452,8 +514,15 @@
           );
       }
 
-      const root = ReactDOM.createRoot(document.getElementById('root'));
-      root.render(<App />);
+            const root = ReactDOM.createRoot(document.getElementById('root'));
+            root.render(<App />);
+
+            // Register Service Worker (optional)
+            if ('serviceWorker' in navigator) {
+                window.addEventListener('load', () => {
+                    navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW registration failed', err));
+                });
+            }
     </script>
   </body>
 </html>

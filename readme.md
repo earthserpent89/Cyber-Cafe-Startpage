@@ -16,3 +16,7 @@ You can use the live version of the start page here:
     - Dynamically fetches wallpapers that match your **screen's aspect ratio**.
 - **Modern "Acrylic" UI**: A semi-transparent, blurred background for all UI elements ensures readability on any wallpaper.
 - **Persistent Settings**: All your customizations are saved in your browser's local storage.
+
+## Notes
+- This page registers a minimal service worker to cache the app shell and the last wallpaper for faster, offline-friendly loads. You can remove `sw.js` and the registration in `index.html` if you prefer not to use it.
+- If you use Wallhaven with third-party CORS proxies, be aware that requests (including an API key if provided) transit those proxies. For privacy, consider hosting your own lightweight proxy.
