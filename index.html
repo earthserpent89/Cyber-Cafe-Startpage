@@ -140,8 +140,9 @@
       const SettingsPanel = ({ config, setConfig, isOpen, onClose, showNotification, fetchWallhavenWallpaper }) => {
           const [activeTab, setActiveTab] = useState('display');
           const [localConfig, setLocalConfig] = useState(config);
-          const [dragId, setDragId] = useState(null);
-          const [dragOverId, setDragOverId] = useState(null);
+          const [dragIndex, setDragIndex] = useState(null);
+          const [dragOverIndex, setDragOverIndex] = useState(null);
+          const [dragOverPos, setDragOverPos] = useState(null); // 'before' | 'after'
           useEffect(() => { if (isOpen) { setLocalConfig(config); } }, [config, isOpen]);
           // Close on Escape
           useEffect(() => {
@@ -291,26 +292,37 @@
                               <div className="space-y-3">
                                   {localConfig.shortcuts.map((shortcut, index) => (
                                       <div key={shortcut.id || index}
-                                           className={`flex gap-2 items-center ${dragOverId === (shortcut.id || index) ? 'ring-2 ring-indigo-500 rounded-md' : ''}`}
-                                           onDragOver={e => { e.preventDefault(); setDragOverId(shortcut.id || index); }}
+                                           data-index={index}
+                                           className="relative flex gap-2 items-center"
+                                           onDragOver={e => {
+                                               e.preventDefault();
+                                               const rect = e.currentTarget.getBoundingClientRect();
+                                               const pos = (e.clientY - rect.top) < rect.height / 2 ? 'before' : 'after';
+                                               setDragOverIndex(index);
+                                               setDragOverPos(pos);
+                                           }}
+                                           onDragLeave={() => { setDragOverIndex(null); setDragOverPos(null); }}
                                            onDrop={e => {
                                                e.preventDefault();
-                                               const fromId = dragId;
-                                               const toId = shortcut.id || index;
-                                               setDragOverId(null);
-                                               if (fromId == null || fromId === toId) return;
+                                               const fromIdx = dragIndex;
+                                               const baseIdx = index;
+                                               const insertPos = dragOverPos || 'after';
+                                               setDragOverIndex(null); setDragOverPos(null);
+                                               if (fromIdx == null) return;
+                                               let toIdx = baseIdx + (insertPos === 'after' ? 1 : 0);
                                                const list = [...localConfig.shortcuts];
-                                               const fromIdx = list.findIndex(s => (s.id || list.indexOf(s)) === fromId);
-                                               const toIdx = list.findIndex(s => (s.id || list.indexOf(s)) === toId);
-                                               if (fromIdx < 0 || toIdx < 0) return;
                                                const [moved] = list.splice(fromIdx, 1);
+                                               if (fromIdx < toIdx) toIdx -= 1; // account for removal shift
                                                list.splice(toIdx, 0, moved);
                                                updateShortcutsLive(list);
                                            }}>
+                                          {/* insertion indicator */}
+                                          {dragOverIndex === index && dragOverPos === 'before' && <div className="absolute -top-1 left-0 right-0 h-0.5 bg-indigo-500 rounded"></div>}
+                                          {dragOverIndex === index && dragOverPos === 'after' && <div className="absolute -bottom-1 left-0 right-0 h-0.5 bg-indigo-500 rounded"></div>}
                                           <button title="Drag to reorder"
                                                   draggable
-                                                  onDragStart={() => setDragId(shortcut.id || index)}
-                                                  onDragEnd={() => { setDragId(null); setDragOverId(null); }}
+                                                  onDragStart={() => setDragIndex(index)}
+                                                  onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); setDragOverPos(null); }}
                                                   className="p-2 rounded-md hover:bg-white/10 cursor-move">
                                               <Icon path="M4 8h16M4 12h16M4 16h16" className="h-5 w-5" />
                                           </button>
@@ -358,6 +370,7 @@
           const contentRef = useRef(null);
           const [overlayPos, setOverlayPos] = useState(null); // { x, y } in px; null = centered
           const lastImageUrlRef = useRef(null);
+          const [overlayPositions, setOverlayPositions] = useState({}); // key => {x,y}
           const manualOverrideRef = useRef(false);
           const isDraggingRef = useRef(false);
           const dragStartRef = useRef({ x: 0, y: 0 });
@@ -365,6 +378,29 @@
           const overlaySizeRef = useRef({ w: 0, h: 0 });
 
           const getAtLeastResolution = () => `${window.screen.width}x${window.screen.height}`;
+          const getWallpaperKey = useCallback(() => {
+              if (!config) return null;
+              if (config.bgMode === 'wallhaven' && config.wallhavenId) return `wh:${config.wallhavenId}`;
+              if (config.bgMode === 'url' && config.bgUrl) return `url:${config.bgUrl}`;
+              return null;
+          }, [config]);
+
+          const saveOverlayPosition = useCallback((key, pos) => {
+              if (!key || !pos) return;
+              setOverlayPositions(prev => {
+                  const next = { ...prev, [key]: { x: Math.round(pos.x), y: Math.round(pos.y) } };
+                  try { localStorage.setItem('overlayPositions', JSON.stringify(next)); } catch {}
+                  return next;
+              });
+          }, []);
+
+          // Load saved overlay positions
+          useEffect(() => {
+              try {
+                  const raw = localStorage.getItem('overlayPositions');
+                  if (raw) setOverlayPositions(JSON.parse(raw));
+              } catch {}
+          }, []);
 
           // Small helper: fetch with timeout
           const fetchWithTimeout = (url, { timeout = 8000 } = {}) => {
@@ -618,17 +654,35 @@
 
               const displayUrl = config?.bgMode === 'url' ? config.bgUrl : config?.wallhavenPath;
               if (displayUrl) {
-                  // Apply wallpaper immediately; analysis is best-effort and may fail due to CORS
-                  mainBg.style.backgroundImage = `url('${displayUrl}')`;
-                  lastImageUrlRef.current = displayUrl;
-                  manualOverrideRef.current = false; // reset manual placement for new wallpaper
-                  Promise.resolve(analyzeAndPosition(displayUrl)).catch(() => setOverlayPos(null));
+                  // Preload to detect real failures; then apply or fallback
+                  preloadImage(displayUrl)
+                    .then(() => {
+                        mainBg.style.backgroundImage = `url('${displayUrl}')`;
+                        lastImageUrlRef.current = displayUrl;
+                        const key = getWallpaperKey();
+                        const saved = key ? overlayPositions[key] : null;
+                        if (saved && contentRef.current) {
+                            const rect = contentRef.current.getBoundingClientRect();
+                            const clamped = clampPos(saved.x, saved.y, rect.width, rect.height);
+                            setOverlayPos(clamped);
+                            manualOverrideRef.current = true;
+                        } else {
+                            manualOverrideRef.current = false;
+                            Promise.resolve(analyzeAndPosition(displayUrl)).catch(() => setOverlayPos(null));
+                        }
+                    })
+                    .catch(() => {
+                        mainBg.style.backgroundImage = `url('background.gif')`;
+                        lastImageUrlRef.current = null;
+                        manualOverrideRef.current = false;
+                        setOverlayPos(null);
+                    });
               } else {
                   mainBg.style.backgroundImage = `url('background.gif')`;
                   lastImageUrlRef.current = null;
                   setOverlayPos(null); // center overlay when no custom wallpaper
               }
-          }, [config?.bgMode, config?.bgUrl, config?.wallhavenPath]);
+          }, [config?.bgMode, config?.bgUrl, config?.wallhavenPath, overlayPositions, getWallpaperKey]);
 
           // Re-analyze on resize
           useEffect(() => {
@@ -686,6 +740,10 @@
               isDraggingRef.current = false;
               manualOverrideRef.current = true; // stick until wallpaper changes
               window.removeEventListener('pointermove', onOverlayPointerMove);
+              const key = getWallpaperKey();
+              if (key && overlayPos) {
+                  saveOverlayPosition(key, overlayPos);
+              }
           };
 
           if (!config) {
