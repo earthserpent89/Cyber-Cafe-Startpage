@@ -386,6 +386,8 @@
           const dragStartRef = useRef({ x: 0, y: 0 });
           const overlayStartRef = useRef({ x: 0, y: 0 });
           const overlaySizeRef = useRef({ w: 0, h: 0 });
+          const overlayPosRef = useRef(null); // mirror of overlayPos for event handlers
+          const analyzeRunIdRef = useRef(0); // increments to cancel in-flight analysis
 
           const getAtLeastResolution = () => `${window.screen.width}x${window.screen.height}`;
           const getWallpaperKey = useCallback(() => {
@@ -436,6 +438,7 @@
           });
 
           const analyzeAndPosition = async (imgUrl) => {
+              const runId = ++analyzeRunIdRef.current;
               if (manualOverrideRef.current) return; // respect manual placement until wallpaper changes
               try {
                   const contentEl = contentRef.current;
@@ -506,17 +509,24 @@
                   const windowEnergyPerPixel = best.score / (targetW * targetH);
                   // If no clearly low-energy region, fall back to center
                   if (windowEnergyPerPixel > avgEnergy * 0.95) {
+                      if (runId !== analyzeRunIdRef.current || manualOverrideRef.current) return;
                       setOverlayPos(null);
+                      overlayPosRef.current = null;
                       return;
                   }
                   const px = Math.round(best.x / cw * vw);
                   const py = Math.round(best.y / ch * vh);
                   const clampedX = Math.max(8, Math.min(px, vw - rect.width - 8));
                   const clampedY = Math.max(8, Math.min(py, vh - rect.height - 8));
-                  setOverlayPos({ x: clampedX, y: clampedY });
+                  if (runId !== analyzeRunIdRef.current || manualOverrideRef.current) return;
+                  const pos = { x: clampedX, y: clampedY };
+                  setOverlayPos(pos);
+                  overlayPosRef.current = pos;
               } catch (err) {
                   // Likely CORS-tainted canvas or other issue; fall back to center
+                  if (runId !== analyzeRunIdRef.current || manualOverrideRef.current) return;
                   setOverlayPos(null);
+                  overlayPosRef.current = null;
               }
           };
 
@@ -716,10 +726,11 @@
                             const rect = contentRef.current.getBoundingClientRect();
                             const clamped = clampPos(saved.x, saved.y, rect.width, rect.height);
                             setOverlayPos(clamped);
+                            overlayPosRef.current = clamped;
                             manualOverrideRef.current = true;
                         } else {
                             manualOverrideRef.current = false;
-                            Promise.resolve(analyzeAndPosition(analysisUrl)).catch(() => setOverlayPos(null));
+                            Promise.resolve(analyzeAndPosition(analysisUrl)).catch(() => { setOverlayPos(null); overlayPosRef.current = null; });
                         }
                     })
                     .catch(() => {
@@ -727,11 +738,13 @@
                         lastImageUrlRef.current = null;
                         manualOverrideRef.current = false;
                         setOverlayPos(null);
+                        overlayPosRef.current = null;
                     });
               } else {
                   mainBg.style.backgroundImage = `url('background.gif')`;
                   lastImageUrlRef.current = null;
                   setOverlayPos(null); // center overlay when no custom wallpaper
+                  overlayPosRef.current = null;
               }
           }, [config?.bgMode, config?.bgUrl, config?.wallhavenPath, overlayPositions, getWallpaperKey]);
 
@@ -762,12 +775,15 @@
               const el = contentRef.current;
               if (!el) return;
               e.preventDefault();
+              manualOverrideRef.current = true; // immediately prefer manual placement during drag
+              analyzeRunIdRef.current++; // cancel any in-flight analysis to avoid snapping back
               const rect = el.getBoundingClientRect();
               overlaySizeRef.current = { w: rect.width, h: rect.height };
               // If not already absolutely positioned, initialize from current rect
               if (!overlayPos) {
                   const init = clampPos(rect.left, rect.top, rect.width, rect.height);
                   setOverlayPos(init);
+                  overlayPosRef.current = init;
                   overlayStartRef.current = init;
               } else {
                   overlayStartRef.current = { ...overlayPos };
@@ -785,6 +801,7 @@
               const { w, h } = overlaySizeRef.current;
               const next = clampPos(overlayStartRef.current.x + dx, overlayStartRef.current.y + dy, w, h);
               setOverlayPos(next);
+              overlayPosRef.current = next;
           };
 
           const onOverlayPointerUp = () => {
@@ -792,8 +809,9 @@
               manualOverrideRef.current = true; // stick until wallpaper changes
               window.removeEventListener('pointermove', onOverlayPointerMove);
               const key = getWallpaperKey();
-              if (key && overlayPos) {
-                  saveOverlayPosition(key, overlayPos);
+              const finalPos = overlayPosRef.current || overlayPos;
+              if (key && finalPos) {
+                  saveOverlayPosition(key, finalPos);
               }
           };
 
