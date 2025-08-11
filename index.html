@@ -101,7 +101,7 @@
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={path} />
           </svg>
       );
-      const Spinner = () => <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white"></div>;
+    const Spinner = () => <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-white"></div>;
 
       // --- Main App Components ---
       const Clock = ({ dateMode }) => {
@@ -319,6 +319,9 @@
           const [isRefreshing, setIsRefreshing] = useState(false);
           const notifTimeoutRef = useRef(null);
           const [nextWallpaper, setNextWallpaper] = useState(null); // { id, path, loaded }
+          const contentRef = useRef(null);
+          const [overlayPos, setOverlayPos] = useState(null); // { x, y } in px; null = centered
+          const lastImageUrlRef = useRef(null);
 
           const getAtLeastResolution = () => `${window.screen.width}x${window.screen.height}`;
 
@@ -331,10 +334,104 @@
 
           const preloadImage = (url) => new Promise((resolve, reject) => {
               const img = new Image();
+              // Attempt anonymous CORS for canvas analysis where supported by server
+              try { img.crossOrigin = 'anonymous'; } catch {}
               img.onload = () => resolve(url);
               img.onerror = reject;
               img.src = url;
           });
+
+          const loadImage = (url) => new Promise((resolve, reject) => {
+              const img = new Image();
+              try { img.crossOrigin = 'anonymous'; } catch {}
+              img.onload = () => resolve(img);
+              img.onerror = reject;
+              img.src = url;
+          });
+
+          const analyzeAndPosition = async (imgUrl) => {
+              try {
+                  const contentEl = contentRef.current;
+                  if (!contentEl) return setOverlayPos(null);
+                  // Measure overlay size
+                  const rect = contentEl.getBoundingClientRect();
+                  const vw = window.innerWidth || document.documentElement.clientWidth;
+                  const vh = window.innerHeight || document.documentElement.clientHeight;
+                  if (!rect.width || !rect.height || !vw || !vh) return setOverlayPos(null);
+
+                  const img = await loadImage(imgUrl);
+                  // Build a canvas that matches viewport aspect for consistent mapping
+                  const cw = 160; // keep small for speed
+                  const ch = Math.max(90, Math.round(cw * vh / Math.max(1, vw)));
+                  const canvas = document.createElement('canvas');
+                  canvas.width = cw; canvas.height = ch;
+                  const ctx = canvas.getContext('2d');
+                  ctx.drawImage(img, 0, 0, cw, ch);
+                  const imageData = ctx.getImageData(0, 0, cw, ch);
+                  const data = imageData.data;
+                  // Luminance array
+                  const lum = new Float32Array(cw * ch);
+                  for (let y = 0, i = 0, p = 0; y < ch; y++) {
+                      for (let x = 0; x < cw; x++, i++, p += 4) {
+                          const r = data[p], g = data[p+1], b = data[p+2];
+                          lum[i] = 0.299*r + 0.587*g + 0.114*b;
+                      }
+                  }
+                  // Simple gradient energy: right and down diffs
+                  const energy = new Float32Array(cw * ch);
+                  let total = 0;
+                  for (let y = 0; y < ch; y++) {
+                      for (let x = 0; x < cw; x++) {
+                          const i = y*cw + x;
+                          const right = x+1 < cw ? lum[y*cw + (x+1)] : lum[i];
+                          const down  = y+1 < ch ? lum[(y+1)*cw + x] : lum[i];
+                          const e = Math.abs(lum[i] - right) + Math.abs(lum[i] - down);
+                          energy[i] = e; total += e;
+                      }
+                  }
+                  const avgEnergy = total / (cw * ch);
+                  // Integral image for fast area sums
+                  const integral = new Float32Array((cw+1) * (ch+1));
+                  for (let y = 1; y <= ch; y++) {
+                      let rowSum = 0;
+                      for (let x = 1; x <= cw; x++) {
+                          rowSum += energy[(y-1)*cw + (x-1)];
+                          integral[y*(cw+1) + x] = integral[(y-1)*(cw+1) + x] + rowSum;
+                      }
+                  }
+                  const targetW = Math.max(8, Math.round(rect.width / vw * cw));
+                  const targetH = Math.max(8, Math.round(rect.height / vh * ch));
+                  const marginX = Math.round(0.02 * cw); // ~2% canvas margin
+                  const marginY = Math.round(0.02 * ch);
+                  let best = { score: Number.POSITIVE_INFINITY, x: Math.round((cw-targetW)/2), y: Math.round((ch-targetH)/2) };
+                  const cx = cw/2, cy = ch/2;
+                  // Iterate candidate positions
+                  for (let y = marginY; y <= ch - targetH - marginY; y++) {
+                      for (let x = marginX; x <= cw - targetW - marginX; x++) {
+                          const x2 = x + targetW, y2 = y + targetH;
+                          const sum = integral[y2*(cw+1) + x2] - integral[y*(cw+1) + x2] - integral[y2*(cw+1) + x] + integral[y*(cw+1) + x];
+                          // Prefer minimal energy; mild bias away from center only if energies are close
+                          const centerDist = Math.hypot((x + targetW/2) - cx, (y + targetH/2) - cy) / Math.hypot(cx, cy);
+                          const score = sum + centerDist * 0.02 * avgEnergy * targetW * targetH;
+                          if (score < best.score) best = { score, x, y };
+                      }
+                  }
+                  const windowEnergyPerPixel = best.score / (targetW * targetH);
+                  // If no clearly low-energy region, fall back to center
+                  if (windowEnergyPerPixel > avgEnergy * 0.95) {
+                      setOverlayPos(null);
+                      return;
+                  }
+                  const px = Math.round(best.x / cw * vw);
+                  const py = Math.round(best.y / ch * vh);
+                  const clampedX = Math.max(8, Math.min(px, vw - rect.width - 8));
+                  const clampedY = Math.max(8, Math.min(py, vh - rect.height - 8));
+                  setOverlayPos({ x: clampedX, y: clampedY });
+              } catch (err) {
+                  // Likely CORS-tainted canvas or other issue; fall back to center
+                  setOverlayPos(null);
+              }
+          };
 
           const fetchWallhavenWallpaper = useCallback(async (fetchConfig, prefetchOnly = false) => {
               setIsRefreshing(true);
@@ -481,7 +578,11 @@
               const displayUrl = config?.bgMode === 'url' ? config.bgUrl : config?.wallhavenPath;
               if (displayUrl) {
                   preloadImage(displayUrl)
-                    .then(() => { mainBg.style.backgroundImage = `url('${displayUrl}')`; })
+                    .then(() => { 
+                        mainBg.style.backgroundImage = `url('${displayUrl}')`; 
+                        lastImageUrlRef.current = displayUrl;
+                        analyzeAndPosition(displayUrl);
+                    })
                     .catch(() => {
                         mainBg.style.backgroundImage = `url('background.gif')`;
                         showNotification('Failed to load wallpaper. Reverted to default.', true);
@@ -490,6 +591,16 @@
                   mainBg.style.backgroundImage = 'none';
               }
           }, [config?.bgMode, config?.bgUrl, config?.wallhavenPath]);
+
+          // Re-analyze on resize
+          useEffect(() => {
+              const onResize = () => {
+                  const url = lastImageUrlRef.current;
+                  if (url) analyzeAndPosition(url);
+              };
+              window.addEventListener('resize', onResize);
+              return () => window.removeEventListener('resize', onResize);
+          }, []);
 
           if (!config) {
             return <div className="bg-gray-900 min-h-screen"></div>;
@@ -502,8 +613,10 @@
                       <p>{notification.message}</p>
                   </div>
                   <main id="main-content" className="relative z-10 flex flex-col items-center justify-center h-screen box-border p-4 sm:p-6 overflow-hidden">
-                      <Clock dateMode={config.dateMode} />
-                      <ShortcutsGrid shortcuts={config.shortcuts} />
+                      <div ref={contentRef} className={`flex flex-col items-center gap-6 ${overlayPos ? '' : ''}`} style={overlayPos ? { position: 'absolute', left: overlayPos.x + 'px', top: overlayPos.y + 'px' } : {}}>
+                          <Clock dateMode={config.dateMode} />
+                          <ShortcutsGrid shortcuts={config.shortcuts} />
+                      </div>
                   </main>
                   {config.bgMode === 'wallhaven' && config.wallhavenId && (
                        <a href={`https://wallhaven.cc/w/${config.wallhavenId}`} target="_blank" className="fixed bottom-5 left-1/2 -translate-x-1/2 p-2 px-4 rounded-full text-white text-sm transition-opacity hover:opacity-100 opacity-70 z-20 acrylic-box">
