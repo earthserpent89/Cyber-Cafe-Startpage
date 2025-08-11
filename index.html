@@ -6,6 +6,7 @@
     <title>Cyber Cafe Startpage</title>
     <meta name="theme-color" content="#111827" />
     <link rel="manifest" href="manifest.json" />
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23111827'/%3E%3Cpath d='M20 26h24v18a10 10 0 01-10 10H30a10 10 0 01-10-10V26z' fill='%23ffffff' opacity='0.9'/%3E%3Cpath d='M24 20c0-3 2-6 8-6s8 3 8 6c0 2-1 3-2 4-1 1-2 2-2 4h-8c0-2-1-3-2-4-1-1-2-2-2-4z' fill='%23a78bfa'/%3E%3C/svg%3E" />
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Google Fonts -->
@@ -137,7 +138,7 @@
           </div>
       );
 
-      const SettingsPanel = ({ config, setConfig, isOpen, onClose, showNotification, fetchWallhavenWallpaper }) => {
+    const SettingsPanel = ({ config, setConfig, isOpen, onClose, showNotification, fetchWallhavenWallpaper }) => {
           const [activeTab, setActiveTab] = useState('display');
           const [localConfig, setLocalConfig] = useState(config);
           const [dragIndex, setDragIndex] = useState(null);
@@ -281,6 +282,15 @@
                                           <label htmlFor="wallhaven-apikey" className="block text-sm font-medium mb-1">API Key</label>
                                           <input id="wallhaven-apikey" type="password" value={localConfig.wallhavenApiKey} onChange={e => handleConfigChange('wallhavenApiKey', e.target.value)} disabled={isWallhavenDisabled} placeholder="Optional, for full access" className="w-full bg-gray-900/50 border border-gray-700 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:cursor-not-allowed" />
                                           <p className="text-xs text-gray-400 mt-1">An API key is required for NSFW content. Get yours from your <a href="https://wallhaven.cc/settings/account" target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline">account settings</a>.</p>
+                                      </div>
+                                      <div>
+                                          <label htmlFor="image-proxy-mode" className="block text-sm font-medium mb-1">Image Proxy</label>
+                                          <select id="image-proxy-mode" value={localConfig.imageProxyMode || 'auto'} onChange={e => handleConfigChange('imageProxyMode', e.target.value)} className="w-full bg-gray-900/50 border border-gray-700 rounded-md px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                                              <option value="auto">Auto (try direct, then proxy)</option>
+                                              <option value="always">Always use proxy</option>
+                                              <option value="off">Off (direct only)</option>
+                                          </select>
+                                          <p className="text-xs text-gray-400 mt-1">Using a proxy helps avoid hotlinking and CORS errors on some images.</p>
                                       </div>
                                   </div>
                               </section>
@@ -510,6 +520,41 @@
               }
           };
 
+          // Build candidate URLs for display, with proxy fallbacks
+          const buildImageCandidates = (originalUrl, mode = 'auto') => {
+              const candidates = [];
+              const weserv = 'https://wsrv.nl/?url=' + encodeURIComponent(originalUrl);
+              const corsproxy = 'https://corsproxy.io/?' + encodeURIComponent(originalUrl);
+              const allorigins = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(originalUrl);
+              const addUnique = (u) => { if (!candidates.includes(u)) candidates.push(u); };
+              const isAlways = mode === 'always';
+              const isOff = mode === 'off';
+              if (!isAlways) addUnique(originalUrl);
+              if (!isOff) {
+                  addUnique(weserv);
+                  addUnique(corsproxy);
+                  addUnique(allorigins);
+              }
+              if (isAlways) addUnique(originalUrl); // as last resort
+              return candidates;
+          };
+
+          // Resolve a display URL by preloading sequentially through candidates
+          const resolveDisplayUrl = async (originalUrl, mode = 'auto') => {
+              const list = buildImageCandidates(originalUrl, mode);
+              for (const url of list) {
+                  try { await preloadImage(url); return url; } catch {}
+              }
+              throw new Error('All image candidates failed');
+          };
+
+          // Choose a CORS-friendly URL for analysis specifically
+          const getAnalysisUrl = (originalUrl, chosenUrl) => {
+              const isCorsFriendly = chosenUrl.startsWith('https://wsrv.nl/') || chosenUrl.startsWith('https://images.weserv.nl/') || chosenUrl.startsWith('https://corsproxy.io/') || chosenUrl.startsWith('https://api.allorigins.win/');
+              if (isCorsFriendly) return chosenUrl;
+              return 'https://wsrv.nl/?url=' + encodeURIComponent(originalUrl);
+          };
+
           const fetchWallhavenWallpaper = useCallback(async (fetchConfig, prefetchOnly = false) => {
               setIsRefreshing(true);
               const proxies = ['https://corsproxy.io/?', 'https://api.allorigins.win/raw?url='];
@@ -560,19 +605,23 @@
                   if (!data?.data?.length) {
                       data = await tryFetch(buildParams(true));
                   }
-                  if (data?.data?.length) {
+                                    if (data?.data?.length) {
                       const idx = Math.floor(Math.random() * data.data.length);
                       const pick = data.data[idx];
-                      if (prefetchOnly) {
-                          // Only stage next wallpaper
-                          preloadImage(pick.path).then(() => setNextWallpaper({ id: pick.id, path: pick.path, loaded: true })).catch(() => setNextWallpaper(null));
-                      } else {
+                                              if (prefetchOnly) {
+                                                  // Only stage next wallpaper using proxy-aware resolution
+                                                  resolveDisplayUrl(pick.path, (fetchConfig?.imageProxyMode) || 'auto')
+                                                        .then((resolved) => preloadImage(resolved).then(() => setNextWallpaper({ id: pick.id, path: pick.path, displayUrl: resolved, loaded: true })))
+                                                        .catch(() => setNextWallpaper(null));
+                                            } else {
                           // Apply now and stage another if possible
                           setConfig(prev => ({ ...prev, wallhavenPath: pick.path, wallhavenId: pick.id }));
                           const nextIdx = (idx + 1) % data.data.length;
                           if (data.data.length > 1) {
                               const candidate = data.data[nextIdx];
-                              preloadImage(candidate.path).then(() => setNextWallpaper({ id: candidate.id, path: candidate.path, loaded: true })).catch(() => setNextWallpaper(null));
+                                                              resolveDisplayUrl(candidate.path, (fetchConfig?.imageProxyMode) || 'auto')
+                                                                .then((resolved) => preloadImage(resolved).then(() => setNextWallpaper({ id: candidate.id, path: candidate.path, displayUrl: resolved, loaded: true })))
+                                                                .catch(() => setNextWallpaper(null));
                           } else {
                               setNextWallpaper(null);
                           }
@@ -602,6 +651,7 @@
                   wallhavenPurity: [true, false, false],
                   wallhavenApiKey: '',
                   wallhavenMatchResolution: true,
+                  imageProxyMode: 'auto',
                   dateMode: 'full',
                   shortcuts: [
                       { name: 'Reddit', url: 'https://reddit.com' },
@@ -654,11 +704,12 @@
 
               const displayUrl = config?.bgMode === 'url' ? config.bgUrl : config?.wallhavenPath;
               if (displayUrl) {
-                  // Preload to detect real failures; then apply or fallback
-                  preloadImage(displayUrl)
-                    .then(() => {
-                        mainBg.style.backgroundImage = `url('${displayUrl}')`;
-                        lastImageUrlRef.current = displayUrl;
+                  // Resolve through proxy if needed, then apply; use a CORS-capable URL for analysis
+                  resolveDisplayUrl(displayUrl, config?.imageProxyMode || 'auto')
+                    .then((resolvedUrl) => {
+                        mainBg.style.backgroundImage = `url('${resolvedUrl}')`;
+                        const analysisUrl = getAnalysisUrl(displayUrl, resolvedUrl);
+                        lastImageUrlRef.current = analysisUrl;
                         const key = getWallpaperKey();
                         const saved = key ? overlayPositions[key] : null;
                         if (saved && contentRef.current) {
@@ -668,7 +719,7 @@
                             manualOverrideRef.current = true;
                         } else {
                             manualOverrideRef.current = false;
-                            Promise.resolve(analyzeAndPosition(displayUrl)).catch(() => setOverlayPos(null));
+                            Promise.resolve(analyzeAndPosition(analysisUrl)).catch(() => setOverlayPos(null));
                         }
                     })
                     .catch(() => {
